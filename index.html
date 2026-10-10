@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <title>TRS Gadgets</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -777,16 +778,10 @@
 (function(){
 "use strict";
 
-const LS = {
-  get(key, fallback){ try{ const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }catch(e){ return fallback; } },
-  set(key, val){ try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
-};
-
-const K = {
-  cats:'trs_categories', prods:'trs_products', admins:'trs_admins',
-  orders:'trs_orders', settings:'trs_settings',
-  prodSeq:'trs_product_seq', orderSeq:'trs_order_seq2'
-};
+/* ---------------- Supabase backend ---------------- */
+const SUPABASE_URL = 'https://oxkidppuweyweijegbfq.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im94a2lkcHB1d2V5d2VpamVnYmZxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTExODUwNDYsImV4cCI6MjEwNjc2MTA0Nn0.OvqgEFcp8Y0Ax-wCbnioIER6V6Mom6WZUZO7ePHy0DQ';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const DEFAULT_SETTINGS = {
   logo:'', banner:'', tagline:'',
@@ -797,15 +792,167 @@ const DEFAULT_SETTINGS = {
   deliveryChargeDhaka:100, deliveryChargeGazipur:80, deliveryChargeOutside:130
 };
 
-function pad2(n){ return String(n).padStart(2,'0'); }
-function genDailyId(prefix, seqKey){
-  const d = new Date();
-  const dateStr = pad2(d.getDate()) + pad2(d.getMonth()+1) + String(d.getFullYear()).slice(-2);
-  const rec = LS.get(seqKey, {date:'', seq:0});
-  const seq = rec.date === dateStr ? rec.seq + 1 : 1;
-  LS.set(seqKey, {date:dateStr, seq});
-  return prefix + dateStr + seq;
+/* ---- DB row <-> app object mapping (DB uses snake_case) ---- */
+function mapCategory(row){ return { id: row.id, name: row.name, iconIdx: row.icon_idx }; }
+function mapProduct(row){
+  return { id: row.id, name: row.name, categoryId: row.category_id, price: Number(row.price), stock: row.stock,
+    discount: row.discount||0, warranty: row.warranty||'', images: row.images||[], description: row.description||'',
+    bestSeller: !!row.best_seller };
 }
+function mapOrder(row){
+  return { id: row.id, date: row.created_at, customerName: row.customer_name, phone: row.phone, address: row.address,
+    note: row.note||'', items: row.items||[], total: Number(row.total), status: row.status, source: row.source,
+    deliveryArea: row.delivery_area, deliveryAreaLabel: row.delivery_area_label,
+    deliveryCharge: row.delivery_charge!=null ? Number(row.delivery_charge) : undefined,
+    paymentMethod: row.payment_method, advancePaymentMethod: row.advance_payment_method, transactionId: row.transaction_id,
+    subtotal: row.subtotal!=null ? Number(row.subtotal) : undefined, paymentMode: row.payment_mode, altPhone: row.alt_phone,
+    discount: row.discount!=null ? Number(row.discount) : undefined,
+    paidAmount: row.paid_amount!=null ? Number(row.paid_amount) : undefined,
+    dueBalance: row.due_balance!=null ? Number(row.due_balance) : undefined };
+}
+function mapSettingsRow(row){
+  return { logo: row.logo||'', banner: row.banner||'', tagline: row.tagline||'',
+    heroTitle: row.hero_title||'', heroSubtitle: row.hero_subtitle||'',
+    phone: row.phone||'', email: row.email||'', address: row.address||'', mapLink: row.map_link||'',
+    deliveryChargeDhaka: Number(row.delivery_charge_dhaka), deliveryChargeGazipur: Number(row.delivery_charge_gazipur),
+    deliveryChargeOutside: Number(row.delivery_charge_outside),
+    bkashNumber: row.bkash_number||'', bankName: row.bank_name||'', bankAccountName: row.bank_account_name||'',
+    bankAccountNumber: row.bank_account_number||'' };
+}
+
+/* ---- admin session token (kept for this browser tab only) ---- */
+function getAdminToken(){ try{ return sessionStorage.getItem('trs_admin_token'); }catch(e){ return null; } }
+function setAdminToken(t){ try{ if(t) sessionStorage.setItem('trs_admin_token', t); else sessionStorage.removeItem('trs_admin_token'); }catch(e){} }
+
+/* ---- thin wrapper over every backend call the app needs ---- */
+const api = {
+  async loadPublicData(){
+    const [catRes, prodRes, setRes] = await Promise.all([
+      sb.from('categories').select('*').order('icon_idx', {ascending:true}),
+      sb.from('products').select('*').order('created_at', {ascending:true}),
+      sb.from('settings').select('*').eq('id',1).maybeSingle()
+    ]);
+    if(catRes.error) throw catRes.error;
+    if(prodRes.error) throw prodRes.error;
+    if(setRes.error) throw setRes.error;
+    return {
+      categories: (catRes.data||[]).map(mapCategory),
+      products: (prodRes.data||[]).map(mapProduct),
+      settings: setRes.data ? Object.assign({}, DEFAULT_SETTINGS, mapSettingsRow(setRes.data)) : Object.assign({}, DEFAULT_SETTINGS)
+    };
+  },
+  async nextId(prefix){
+    const { data, error } = await sb.rpc('generate_daily_id', { p_prefix: prefix });
+    if(error) throw error;
+    return data;
+  },
+  async login(username, password){
+    const { data, error } = await sb.rpc('admin_login', { p_username: username, p_password: password });
+    if(error) throw error;
+    return data; // token string, or null if credentials were wrong
+  },
+  async whoAmI(token){
+    if(!token) return null;
+    const { data, error } = await sb.rpc('admin_whoami', { p_token: token });
+    if(error) return null;
+    return data;
+  },
+  async logout(token){
+    if(!token) return;
+    await sb.rpc('admin_logout', { p_token: token });
+  },
+  async primaryAdminUsername(){
+    const { data, error } = await sb.rpc('primary_admin_username');
+    if(error) throw error;
+    return data;
+  },
+  async createProduct(token, p){
+    const { data, error } = await sb.rpc('admin_create_product', { p_token: token, p_name: p.name,
+      p_category_id: p.categoryId, p_price: p.price, p_stock: p.stock, p_discount: p.discount,
+      p_warranty: p.warranty, p_images: p.images, p_description: p.description, p_best_seller: p.bestSeller });
+    if(error) throw error;
+    return data;
+  },
+  async updateProduct(token, id, p){
+    const { error } = await sb.rpc('admin_update_product', { p_token: token, p_id: id, p_name: p.name,
+      p_category_id: p.categoryId, p_price: p.price, p_stock: p.stock, p_discount: p.discount,
+      p_warranty: p.warranty, p_images: p.images, p_description: p.description, p_best_seller: p.bestSeller });
+    if(error) throw error;
+  },
+  async deleteProduct(token, id){
+    const { error } = await sb.rpc('admin_delete_product', { p_token: token, p_id: id });
+    if(error) throw error;
+  },
+  async decrementStock(id, qty){
+    const { error } = await sb.rpc('public_decrement_stock', { p_id: id, p_qty: qty });
+    if(error) throw error;
+  },
+  async createCategory(token, name, iconIdx){
+    const { data, error } = await sb.rpc('admin_create_category', { p_token: token, p_name: name, p_icon_idx: iconIdx });
+    if(error) throw error;
+    return data;
+  },
+  async updateCategory(token, id, name){
+    const { error } = await sb.rpc('admin_update_category', { p_token: token, p_id: id, p_name: name });
+    if(error) throw error;
+  },
+  async deleteCategory(token, id){
+    const { error } = await sb.rpc('admin_delete_category', { p_token: token, p_id: id });
+    if(error) throw error;
+  },
+  async createOrder(o){
+    const { data, error } = await sb.rpc('public_create_order', {
+      p_customer_name: o.customerName, p_phone: o.phone, p_address: o.address, p_note: o.note||'',
+      p_items: o.items, p_total: o.total, p_source: 'online',
+      p_delivery_area: o.deliveryArea, p_delivery_area_label: o.deliveryAreaLabel, p_delivery_charge: o.deliveryCharge,
+      p_payment_method: o.paymentMethod, p_advance_payment_method: o.advancePaymentMethod||null,
+      p_transaction_id: o.transactionId, p_subtotal: o.subtotal, p_status: 'Pending' });
+    if(error) throw error;
+    return data;
+  },
+  async createWalkinOrder(token, id, o){
+    const { error } = await sb.rpc('admin_create_walkin_order', { p_token: token, p_id: id,
+      p_customer_name: o.customerName, p_phone: o.phone, p_address: o.address, p_note: o.note||'',
+      p_items: o.items, p_total: o.total, p_payment_mode: o.paymentMode, p_alt_phone: o.altPhone,
+      p_delivery_charge: o.deliveryCharge, p_discount: o.discount, p_paid_amount: o.paidAmount, p_due_balance: o.dueBalance });
+    if(error) throw error;
+  },
+  async listOrders(token){
+    const { data, error } = await sb.rpc('admin_list_orders', { p_token: token });
+    if(error) throw error;
+    return (data||[]).map(mapOrder);
+  },
+  async updateOrderStatus(token, id, status){
+    const { error } = await sb.rpc('admin_update_order_status', { p_token: token, p_order_id: id, p_status: status });
+    if(error) throw error;
+  },
+  async deleteOrder(token, id){
+    const { error } = await sb.rpc('admin_delete_order', { p_token: token, p_order_id: id });
+    if(error) throw error;
+  },
+  async listAdmins(token){
+    const { data, error } = await sb.rpc('admin_list_admins', { p_token: token });
+    if(error) throw error;
+    return data||[];
+  },
+  async addAdmin(token, username, password){
+    const { error } = await sb.rpc('admin_add_admin', { p_token: token, p_new_username: username, p_new_password: password });
+    if(error) throw error;
+  },
+  async removeAdmin(token, username){
+    const { error } = await sb.rpc('admin_remove_admin', { p_token: token, p_target_username: username });
+    if(error) throw error;
+  },
+  async changePassword(token, currentPassword, newPassword){
+    const { data, error } = await sb.rpc('admin_change_password', { p_token: token, p_current_password: currentPassword, p_new_password: newPassword });
+    if(error) throw error;
+    return !!data;
+  },
+  async updateSettings(token, settingsObj){
+    const { error } = await sb.rpc('admin_update_settings', { p_token: token, p_settings: settingsObj });
+    if(error) throw error;
+  }
+};
 
 const CAT_ICONS = [
   '<path d="M4 13a8 8 0 0 1 16 0"/><rect x="3" y="13" width="4" height="7" rx="1.5"/><rect x="17" y="13" width="4" height="7" rx="1.5"/>',
@@ -820,51 +967,26 @@ function catIconSvg(idx){
   return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
 }
 
-function seedIfEmpty(){
-  if(!localStorage.getItem(K.cats)){
-    LS.set(K.cats, [
-      {id:'c-audio', name:'Audio', iconIdx:0},
-      {id:'c-wearables', name:'Wearables', iconIdx:1},
-      {id:'c-charging', name:'Charging', iconIdx:2},
-      {id:'c-smarthome', name:'Smart Home', iconIdx:3},
-      {id:'c-cables', name:'Cables & Accessories', iconIdx:4},
-      {id:'c-personalcare', name:'Personal Care', iconIdx:5}
-    ]);
+let categories = [];
+let products = [];
+let orders = [];       // only populated once an admin is logged in
+let admins = [];       // only populated once an admin is logged in
+let settings = Object.assign({}, DEFAULT_SETTINGS);
+let dataReady = false;
+
+async function loadInitialData(){
+  try{
+    const result = await api.loadPublicData();
+    categories = result.categories;
+    products = result.products;
+    settings = result.settings;
+    dataReady = true;
+  }catch(e){
+    console.error('Failed to load shop data', e);
+    dataReady = false;
+    toast("Couldn't reach the shop database — check your connection and reload.");
   }
-  if(!localStorage.getItem(K.prods)){
-    const mk = (name, categoryId, price, stock, discount, warranty, bestSeller, description)=>({
-      id: genDailyId('P', K.prodSeq), name, categoryId, price, stock, discount: discount||0,
-      warranty: warranty||'', bestSeller: !!bestSeller, images: [], description: description||''
-    });
-    LS.set(K.prods, [
-      mk('Wireless Earbuds Pro','c-audio',2490,14,20,'12 Months',true,'Active noise cancelling earbuds with 30h case battery.'),
-      mk('Over-Ear Studio Headphones','c-audio',3990,6,0,'12 Months',false,'Studio-tuned drivers, foldable, USB-C.'),
-      mk('Fitness Band X2','c-wearables',1690,20,10,'6 Months',true,'Heart rate, sleep tracking, 10-day battery.'),
-      mk('Smartwatch Lite','c-wearables',4290,9,0,'12 Months',true,'AMOLED display, calls, 100+ sport modes.'),
-      mk('65W GaN Charger','c-charging',1590,25,0,'6 Months',true,'Dual-port fast charger for laptops and phones.'),
-      mk('10000mAh Power Bank','c-charging',1290,3,15,'6 Months',false,'Slim power bank with USB-C PD.'),
-      mk('Smart LED Bulb','c-smarthome',590,0,0,'3 Months',false,'Wi-Fi bulb, 16M colors, app + voice control.'),
-      mk('Mini Smart Plug','c-smarthome',790,17,0,'3 Months',false,'Schedule and control any outlet from your phone.'),
-      mk('Braided USB-C Cable 1m','c-cables',390,40,0,'3 Months',false,'Durable braided cable, fast charging safe.'),
-      mk('Handheld Massage Gun','c-personalcare',3200,12,15,'6 Months',false,'Percussion massager with 4 head attachments.')
-    ]);
-  }
-  if(!localStorage.getItem(K.admins)) LS.set(K.admins, [{username:'admin', password:'123'}]);
-  if(!localStorage.getItem(K.orders)) LS.set(K.orders, []);
 }
-seedIfEmpty();
-
-let categories = LS.get(K.cats, []);
-let products = LS.get(K.prods, []);
-let admins = LS.get(K.admins, []);
-let orders = LS.get(K.orders, []);
-let settings = Object.assign({}, DEFAULT_SETTINGS, LS.get(K.settings, {}));
-
-function saveCats(){ LS.set(K.cats, categories); }
-function saveProds(){ LS.set(K.prods, products); }
-function saveAdmins(){ LS.set(K.admins, admins); }
-function saveOrders(){ LS.set(K.orders, orders); }
-function saveSettings(){ LS.set(K.settings, settings); }
 
 function money(n){ return '৳' + Number(n||0).toLocaleString('en-BD'); }
 function salePrice(p){ return p.discount>0 ? Math.round(p.price * (1 - p.discount/100)) : p.price; }
@@ -888,8 +1010,9 @@ document.querySelectorAll('.overlay').forEach(ov=>ov.addEventListener('click', (
 /* ================= STOREFRONT ================= */
 let activeCat = 'all';
 let searchTerm = '';
-let cart = LS.get('trs_cart', []);
-function saveCart(){ LS.set('trs_cart', cart); }
+// The shopping cart is intentionally per-browser (not shared), so it stays in local storage.
+let cart = (function(){ try{ return JSON.parse(localStorage.getItem('trs_cart')||'[]'); }catch(e){ return []; } })();
+function saveCart(){ try{ localStorage.setItem('trs_cart', JSON.stringify(cart)); }catch(e){} }
 
 function renderCatGrid(){
   const grid = document.getElementById('catGrid');
@@ -1168,9 +1291,10 @@ document.getElementById('toCheckoutBtn').addEventListener('click', ()=>{
   openModal('checkoutOverlay');
 });
 
-document.getElementById('checkoutForm').addEventListener('submit', function(e){
+document.getElementById('checkoutForm').addEventListener('submit', async function(e){
   e.preventDefault();
   if(!cart.length) return;
+  const submitBtn = e.target.querySelector('button[type=submit]');
   const items = cart.map(c=>{
     const p = products.find(x=>x.id===c.productId);
     return { productId:c.productId, name:p?p.name:'Unknown item', price:p?salePrice(p):0, qty:c.qty };
@@ -1181,8 +1305,7 @@ document.getElementById('checkoutForm').addEventListener('submit', function(e){
   const paymentMethod = document.getElementById('ckPaymentMethod').value;
   const total = subtotal + deliveryCharge;
   const areaLabel = deliveryArea==='gazipur' ? 'Inside Gazipur City' : deliveryArea==='outside' ? 'Outside Dhaka' : 'Inside Dhaka';
-  const order = {
-    id: genDailyId('O', K.orderSeq), date:new Date().toISOString(),
+  const orderDraft = {
     customerName: document.getElementById('ckName').value.trim(),
     phone: document.getElementById('ckPhone').value.trim(),
     address: document.getElementById('ckAddress').value.trim(),
@@ -1191,17 +1314,27 @@ document.getElementById('checkoutForm').addEventListener('submit', function(e){
     paymentMethod,
     advancePaymentMethod: paymentMethod==='COD' ? document.getElementById('ckAdvanceMethod').value : '',
     transactionId: paymentMethod==='COD' ? document.getElementById('ckAdvanceTxnId').value.trim() : document.getElementById('ckTxnId').value.trim(),
-    items, subtotal, total, status:'Pending', source:'online'
+    items, subtotal, total
   };
-  items.forEach(i=>{ const p = products.find(x=>x.id===i.productId); if(p) p.stock = Math.max(0, p.stock - i.qty); });
-  saveProds();
-  orders.unshift(order); saveOrders();
-  cart = []; saveCart(); renderCartCount(); renderProducts(); renderOffersAndBestSellers();
-  document.getElementById('checkoutForm').reset();
-  closeModal('checkoutOverlay');
-  document.getElementById('confirmMsg').innerHTML = `Order <b>${order.id}</b> placed for ${money(order.total)} (incl. ${money(order.deliveryCharge)} delivery). We'll reach out on ${escapeHtml(order.phone)} to confirm.`;
-  openModal('confirmOverlay');
-  renderAdminOverview(); renderAdminOrders();
+  submitBtn.disabled = true; submitBtn.textContent = 'Placing order…';
+  try{
+    const newId = await api.createOrder(orderDraft);
+    for(const i of items){
+      const p = products.find(x=>x.id===i.productId);
+      if(p) p.stock = Math.max(0, p.stock - i.qty);
+      try{ await api.decrementStock(i.productId, i.qty); }catch(e){ console.error('stock decrement failed', e); }
+    }
+    cart = []; saveCart(); renderCartCount(); renderProducts(); renderOffersAndBestSellers();
+    document.getElementById('checkoutForm').reset();
+    closeModal('checkoutOverlay');
+    document.getElementById('confirmMsg').innerHTML = `Order <b>${newId}</b> placed for ${money(total)} (incl. ${money(deliveryCharge)} delivery). We'll reach out on ${escapeHtml(orderDraft.phone)} to confirm.`;
+    openModal('confirmOverlay');
+  }catch(err){
+    console.error('order placement failed', err);
+    toast("Couldn't place the order — check your connection and try again.");
+  }finally{
+    submitBtn.disabled = false; submitBtn.textContent = 'Place order';
+  }
 });
 
 document.getElementById('searchInput').addEventListener('input', (e)=>{ searchTerm = e.target.value; renderProducts(); });
@@ -1312,28 +1445,41 @@ function renderSettingsForm(){
   document.getElementById('settingsBankAccountNumber').value = settings.bankAccountNumber || '';
 }
 
-document.getElementById('settingsForm').addEventListener('submit', function(e){
+document.getElementById('settingsForm').addEventListener('submit', async function(e){
   e.preventDefault();
-  settings.logo = pendingLogo;
-  settings.banner = pendingBanner;
-  settings.tagline = document.getElementById('taglineInput').value.trim();
-  settings.heroTitle = document.getElementById('heroTitleInput').value.trim();
-  settings.heroSubtitle = document.getElementById('heroSubtitleInput').value.trim();
-  settings.phone = document.getElementById('settingsPhone').value.trim();
-  settings.email = document.getElementById('settingsEmail').value.trim();
-  settings.address = document.getElementById('settingsAddress').value.trim();
-  settings.mapLink = document.getElementById('settingsMapLink').value.trim();
-  settings.deliveryChargeDhaka = Number(document.getElementById('settingsDeliveryDhaka').value) || 0;
-  settings.deliveryChargeGazipur = Number(document.getElementById('settingsDeliveryGazipur').value) || 0;
-  settings.deliveryChargeOutside = Number(document.getElementById('settingsDeliveryOutside').value) || 0;
-  settings.bkashNumber = document.getElementById('settingsBkashNumber').value.trim();
-  settings.bankName = document.getElementById('settingsBankName').value.trim();
-  settings.bankAccountName = document.getElementById('settingsBankAccountName').value.trim();
-  settings.bankAccountNumber = document.getElementById('settingsBankAccountNumber').value.trim();
-  saveSettings();
-  applySettingsToStorefront();
-  sendStockToMemoIframe();
-  toast('Settings saved');
+  const token = getAdminToken();
+  if(!token) return;
+  const next = Object.assign({}, settings, {
+    logo: pendingLogo, banner: pendingBanner,
+    tagline: document.getElementById('taglineInput').value.trim(),
+    heroTitle: document.getElementById('heroTitleInput').value.trim(),
+    heroSubtitle: document.getElementById('heroSubtitleInput').value.trim(),
+    phone: document.getElementById('settingsPhone').value.trim(),
+    email: document.getElementById('settingsEmail').value.trim(),
+    address: document.getElementById('settingsAddress').value.trim(),
+    mapLink: document.getElementById('settingsMapLink').value.trim(),
+    deliveryChargeDhaka: Number(document.getElementById('settingsDeliveryDhaka').value) || 0,
+    deliveryChargeGazipur: Number(document.getElementById('settingsDeliveryGazipur').value) || 0,
+    deliveryChargeOutside: Number(document.getElementById('settingsDeliveryOutside').value) || 0,
+    bkashNumber: document.getElementById('settingsBkashNumber').value.trim(),
+    bankName: document.getElementById('settingsBankName').value.trim(),
+    bankAccountName: document.getElementById('settingsBankAccountName').value.trim(),
+    bankAccountNumber: document.getElementById('settingsBankAccountNumber').value.trim()
+  });
+  const submitBtn = e.target.querySelector('button[type=submit]');
+  submitBtn.disabled = true;
+  try{
+    await api.updateSettings(token, next);
+    settings = next;
+    applySettingsToStorefront();
+    sendStockToMemoIframe();
+    toast('Settings saved');
+  }catch(err){
+    console.error('settings save failed', err);
+    toast("Couldn't save settings — check your connection.");
+  }finally{
+    submitBtn.disabled = false;
+  }
 });
 
 let clickTimes = [];
@@ -1349,49 +1495,79 @@ document.getElementById('adminTrigger').addEventListener('click', ()=>{
 });
 
 /* ================= ADMIN AUTH ================= */
-let currentAdmin = sessionStorage.getItem('trs_current_admin') || null;
+let currentAdmin = null;
 
-document.getElementById('loginForm').addEventListener('submit', function(e){
+document.getElementById('loginForm').addEventListener('submit', async function(e){
   e.preventDefault();
   const u = document.getElementById('loginUser').value.trim();
   const p = document.getElementById('loginPass').value;
-  const match = admins.find(a=>a.username===u && a.password===p);
-  if(match){
-    currentAdmin = u;
-    sessionStorage.setItem('trs_current_admin', u);
-    document.getElementById('loginForm').reset();
-    closeModal('loginOverlay');
-    enterAdmin();
-  } else {
+  const submitBtn = e.target.querySelector('button[type=submit]');
+  document.getElementById('loginErr').classList.remove('show');
+  submitBtn.disabled = true; submitBtn.textContent = 'Signing in…';
+  try{
+    const token = await api.login(u, p);
+    if(token){
+      setAdminToken(token);
+      currentAdmin = u;
+      document.getElementById('loginForm').reset();
+      closeModal('loginOverlay');
+      await enterAdmin();
+    } else {
+      document.getElementById('loginErr').textContent = 'Incorrect username or password.';
+      document.getElementById('loginErr').classList.add('show');
+    }
+  }catch(err){
+    console.error('login failed', err);
+    document.getElementById('loginErr').textContent = "Couldn't reach the server — check your connection.";
     document.getElementById('loginErr').classList.add('show');
+  }finally{
+    submitBtn.disabled = false; submitBtn.textContent = 'Sign in';
   }
 });
 
-function enterAdmin(){
+async function enterAdmin(){
   document.getElementById('whoName').textContent = currentAdmin;
   document.getElementById('adminRoot').classList.add('show');
-  renderAdminAll();
+  await renderAdminAll();
   switchPanel('overview');
 }
-document.getElementById('logoutBtn').addEventListener('click', ()=>{
-  currentAdmin = null; sessionStorage.removeItem('trs_current_admin');
+document.getElementById('logoutBtn').addEventListener('click', async ()=>{
+  const token = getAdminToken();
+  setAdminToken(null);
+  currentAdmin = null;
   document.getElementById('adminRoot').classList.remove('show');
+  if(token){ try{ await api.logout(token); }catch(e){} }
 });
 document.getElementById('viewSiteBtn').addEventListener('click', ()=>document.getElementById('adminRoot').classList.remove('show'));
-if(currentAdmin && admins.find(a=>a.username===currentAdmin)) enterAdmin();
 
-function switchPanel(name){
+async function switchPanel(name){
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.side-link').forEach(l=>l.classList.remove('active'));
   document.getElementById('panel-'+name).classList.add('active');
   document.querySelector(`.side-link[data-panel="${name}"]`).classList.add('active');
   document.getElementById('adminSide').classList.remove('open');
   if(name === 'memo') ensureMemoIframeLoaded();
+  if(name === 'orders'){ await refreshOrders(); renderAdminOrders(); }
+  if(name === 'admins'){ await refreshAdmins(); renderAdminAdmins(); }
 }
 document.querySelectorAll('.side-link').forEach(link=>link.addEventListener('click', ()=>switchPanel(link.dataset.panel)));
 document.getElementById('burgerBtn').addEventListener('click', ()=>document.getElementById('adminSide').classList.toggle('open'));
 
-function renderAdminAll(){
+async function refreshOrders(){
+  const token = getAdminToken();
+  if(!token) return;
+  try{ orders = await api.listOrders(token); }
+  catch(e){ console.error('failed to load orders', e); toast("Couldn't load orders — check your connection."); }
+}
+async function refreshAdmins(){
+  const token = getAdminToken();
+  if(!token) return;
+  try{ admins = await api.listAdmins(token); }
+  catch(e){ console.error('failed to load admins', e); toast("Couldn't load admin list — check your connection."); }
+}
+
+async function renderAdminAll(){
+  await Promise.all([refreshOrders(), refreshAdmins()]);
   renderAdminOverview(); renderSettingsForm(); renderCategorySelect(); renderAdminProducts(); renderAdminCategories();
   renderAdminOrders(); renderAdminAdmins();
 }
@@ -1437,11 +1613,18 @@ function renderAdminProducts(){
   }).join('') || `<tr><td colspan="7" style="color:var(--ink-faint);">No products found.</td></tr>`;
 
   tbody.querySelectorAll('[data-edit-prod]').forEach(b=>b.addEventListener('click', ()=>openProductForm(b.dataset.editProd)));
-  tbody.querySelectorAll('[data-del-prod]').forEach(b=>b.addEventListener('click', ()=>{
-    if(confirm('Delete this product? This cannot be undone.')){
-      products = products.filter(p=>p.id!==b.dataset.delProd);
-      saveProds(); renderAdminProducts(); renderProducts(); renderOffersAndBestSellers(); refreshHeroStats(); renderAdminOverview();
+  tbody.querySelectorAll('[data-del-prod]').forEach(b=>b.addEventListener('click', async ()=>{
+    const id = b.dataset.delProd;
+    if(!confirm('Delete this product? This cannot be undone.')) return;
+    const token = getAdminToken();
+    try{
+      await api.deleteProduct(token, id);
+      products = products.filter(p=>p.id!==id);
+      renderAdminProducts(); renderProducts(); renderOffersAndBestSellers(); refreshHeroStats(); renderAdminOverview();
       toast('Product deleted');
+    }catch(err){
+      console.error('delete product failed', err);
+      toast("Couldn't delete the product — check your connection.");
     }
   }));
 }
@@ -1491,8 +1674,10 @@ function openProductForm(id){
   openModal('productOverlay');
 }
 
-document.getElementById('productForm').addEventListener('submit', function(e){
+document.getElementById('productForm').addEventListener('submit', async function(e){
   e.preventDefault();
+  const token = getAdminToken();
+  if(!token) return;
   const id = document.getElementById('pId').value;
   const images = photoUrls.map(u=>u.trim()).filter(Boolean);
   const data = {
@@ -1505,18 +1690,27 @@ document.getElementById('productForm').addEventListener('submit', function(e){
     images, description: document.getElementById('pDesc').value.trim(),
     bestSeller: document.getElementById('pBestSeller').checked
   };
-  if(id){
-    const p = products.find(x=>x.id===id);
-    Object.assign(p, data);
-    toast('Product updated');
-  } else {
-    const newId = genDailyId('P', K.prodSeq);
-    products.push(Object.assign({id:newId}, data));
-    toast('Product added (ID ' + newId + ')');
+  const submitBtn = e.target.querySelector('button[type=submit]');
+  submitBtn.disabled = true;
+  try{
+    if(id){
+      await api.updateProduct(token, id, data);
+      const p = products.find(x=>x.id===id);
+      Object.assign(p, data);
+      toast('Product updated');
+    } else {
+      const newId = await api.createProduct(token, data);
+      products.push(Object.assign({id:newId}, data));
+      toast('Product added (ID ' + newId + ')');
+    }
+    closeModal('productOverlay');
+    renderAdminProducts(); renderProducts(); renderOffersAndBestSellers(); refreshHeroStats(); renderAdminOverview();
+  }catch(err){
+    console.error('save product failed', err);
+    toast("Couldn't save the product — check your connection.");
+  }finally{
+    submitBtn.disabled = false;
   }
-  saveProds();
-  closeModal('productOverlay');
-  renderAdminProducts(); renderProducts(); renderOffersAndBestSellers(); refreshHeroStats(); renderAdminOverview();
 });
 
 /* ---------------- Categories ---------------- */
@@ -1528,13 +1722,19 @@ function renderAdminCategories(){
   }).join('') || `<tr><td colspan="3" style="color:var(--ink-faint);">No categories yet.</td></tr>`;
 
   tbody.querySelectorAll('[data-edit-cat]').forEach(b=>b.addEventListener('click', ()=>openCategoryForm(b.dataset.editCat)));
-  tbody.querySelectorAll('[data-del-cat]').forEach(b=>b.addEventListener('click', ()=>{
+  tbody.querySelectorAll('[data-del-cat]').forEach(b=>b.addEventListener('click', async ()=>{
     const id = b.dataset.delCat;
     if(products.some(p=>p.categoryId===id)){ toast('Move or delete its products first'); return; }
-    if(confirm('Delete this category?')){
+    if(!confirm('Delete this category?')) return;
+    const token = getAdminToken();
+    try{
+      await api.deleteCategory(token, id);
       categories = categories.filter(c=>c.id!==id);
-      saveCats(); renderAdminCategories(); renderCatRail(); renderCatGrid(); renderCategorySelect(); refreshHeroStats(); renderAdminOverview();
+      renderAdminCategories(); renderCatRail(); renderCatGrid(); renderCategorySelect(); refreshHeroStats(); renderAdminOverview();
       toast('Category deleted');
+    }catch(err){
+      console.error('delete category failed', err);
+      toast(err && err.message ? err.message : "Couldn't delete the category — check your connection.");
     }
   }));
 }
@@ -1548,15 +1748,32 @@ function openCategoryForm(id){
   openModal('categoryOverlay');
 }
 
-document.getElementById('categoryForm').addEventListener('submit', function(e){
+document.getElementById('categoryForm').addEventListener('submit', async function(e){
   e.preventDefault();
+  const token = getAdminToken();
+  if(!token) return;
   const id = document.getElementById('cId').value;
   const name = document.getElementById('cName').value.trim();
-  if(id){ categories.find(x=>x.id===id).name = name; toast('Category updated'); }
-  else { categories.push({id:'c'+Date.now().toString(36), name, iconIdx: categories.length}); toast('Category added'); }
-  saveCats();
-  closeModal('categoryOverlay');
-  renderAdminCategories(); renderCatRail(); renderCatGrid(); renderCategorySelect(); refreshHeroStats(); renderAdminOverview();
+  const submitBtn = e.target.querySelector('button[type=submit]');
+  submitBtn.disabled = true;
+  try{
+    if(id){
+      await api.updateCategory(token, id, name);
+      categories.find(x=>x.id===id).name = name;
+      toast('Category updated');
+    } else {
+      const newId = await api.createCategory(token, name, categories.length);
+      categories.push({id:newId, name, iconIdx: categories.length});
+      toast('Category added');
+    }
+    closeModal('categoryOverlay');
+    renderAdminCategories(); renderCatRail(); renderCatGrid(); renderCategorySelect(); refreshHeroStats(); renderAdminOverview();
+  }catch(err){
+    console.error('save category failed', err);
+    toast("Couldn't save the category — check your connection.");
+  }finally{
+    submitBtn.disabled = false;
+  }
 });
 
 /* ---------------- Orders ---------------- */
@@ -1584,28 +1801,42 @@ function renderAdminOrders(){
       <td><button class="icon-link" data-view-order="${o.id}">View</button><button class="icon-link" data-print-order="${o.id}">PDF</button>${canDelete?`<button class="icon-link danger" data-del-order="${o.id}">Delete</button>`:''}</td>
     </tr>`).join('') || `<tr><td colspan="7" style="color:var(--ink-faint);">No orders yet.</td></tr>`;
 
-  tbody.querySelectorAll('[data-status]').forEach(sel=>sel.addEventListener('change', ()=>{
+  tbody.querySelectorAll('[data-status]').forEach(sel=>sel.addEventListener('change', async ()=>{
     const o = orders.find(x=>x.id===sel.dataset.status);
-    o.status = sel.value; saveOrders(); renderAdminOverview();
-    toast('Order ' + o.id + ' marked ' + o.status);
+    const prevStatus = o.status;
+    const token = getAdminToken();
+    try{
+      await api.updateOrderStatus(token, o.id, sel.value);
+      o.status = sel.value; renderAdminOverview();
+      toast('Order ' + o.id + ' marked ' + o.status);
+    }catch(err){
+      console.error('status update failed', err);
+      sel.value = prevStatus;
+      toast("Couldn't update order status — check your connection.");
+    }
   }));
   tbody.querySelectorAll('[data-view-order]').forEach(b=>b.addEventListener('click', ()=>viewOrder(b.dataset.viewOrder)));
   tbody.querySelectorAll('[data-print-order]').forEach(b=>b.addEventListener('click', ()=>printOrderMemo(b.dataset.printOrder)));
   tbody.querySelectorAll('[data-del-order]').forEach(b=>b.addEventListener('click', ()=>deleteOrder(b.dataset.delOrder)));
 }
 
-function deleteOrder(id){
+async function deleteOrder(id){
   if(!isPrimaryAdmin()){ toast('Only the primary admin can delete orders'); return; }
   const o = orders.find(x=>x.id===id);
   if(!o) return;
   const warn = 'Delete order ' + o.id + ' (' + o.customerName + ', ' + money(o.total) + ')?\n\nThis cannot be undone.';
   if(!confirm(warn)) return;
-  orders = orders.filter(x=>x.id!==id);
-  saveOrders();
-  renderAdminOrders();
-  renderAdminOverview();
-  closeModal('orderOverlay');
-  toast('Order ' + id + ' deleted');
+  try{
+    await api.deleteOrder(getAdminToken(), id);
+    orders = orders.filter(x=>x.id!==id);
+    renderAdminOrders();
+    renderAdminOverview();
+    closeModal('orderOverlay');
+    toast('Order ' + id + ' deleted');
+  }catch(err){
+    console.error('delete order failed', err);
+    toast(err && err.message ? err.message : "Couldn't delete the order — check your connection.");
+  }
 }
 
 function sourceLabel(source){ return source==='walkin' ? 'Walk-in / In-store' : 'Online Order'; }
@@ -1664,11 +1895,20 @@ function renderAdminAdmins(){
   tbody.innerHTML = admins.map((a,idx)=>`
     <tr><td>${escapeHtml(a.username)} ${idx===0?'<span class="badge amber" style="margin-left:6px;">Primary</span>':''} ${a.username===currentAdmin?'<span class="badge green" style="margin-left:6px;">You</span>':''}</td>
     <td>${admins.length>1 ? `<button class="icon-link danger" data-del-admin="${escapeHtml(a.username)}">Remove</button>` : '<span style="color:var(--ink-faint);font-size:12.5px;">Only admin</span>'}</td></tr>`).join('');
-  tbody.querySelectorAll('[data-del-admin]').forEach(b=>b.addEventListener('click', ()=>{
+  tbody.querySelectorAll('[data-del-admin]').forEach(b=>b.addEventListener('click', async ()=>{
     const uname = b.dataset.delAdmin;
     if(admins.length<=1){ toast('At least one admin must remain'); return; }
     if(uname===currentAdmin){ toast("You can't remove the account you're signed in as"); return; }
-    if(confirm('Remove admin "'+uname+'"?')){ admins = admins.filter(a=>a.username!==uname); saveAdmins(); renderAdminAdmins(); toast('Admin removed'); }
+    if(!confirm('Remove admin "'+uname+'"?')) return;
+    try{
+      await api.removeAdmin(getAdminToken(), uname);
+      admins = admins.filter(a=>a.username!==uname);
+      renderAdminAdmins();
+      toast('Admin removed');
+    }catch(err){
+      console.error('remove admin failed', err);
+      toast(err && err.message ? err.message : "Couldn't remove the admin — check your connection.");
+    }
   }));
 }
 document.getElementById('openAddAdminBtn').addEventListener('click', ()=>{
@@ -1676,29 +1916,49 @@ document.getElementById('openAddAdminBtn').addEventListener('click', ()=>{
   document.getElementById('adminAddErr').classList.remove('show');
   openModal('adminAddOverlay');
 });
-document.getElementById('adminAddForm').addEventListener('submit', function(e){
+document.getElementById('adminAddForm').addEventListener('submit', async function(e){
   e.preventDefault();
   const u = document.getElementById('newAdminUser').value.trim();
   const p = document.getElementById('newAdminPass').value;
-  if(admins.some(a=>a.username.toLowerCase()===u.toLowerCase())){ document.getElementById('adminAddErr').classList.add('show'); return; }
-  admins.push({username:u, password:p});
-  saveAdmins();
-  closeModal('adminAddOverlay');
-  renderAdminAdmins();
-  toast('Admin "'+u+'" added');
+  const errEl = document.getElementById('adminAddErr');
+  errEl.classList.remove('show');
+  if(admins.some(a=>a.username.toLowerCase()===u.toLowerCase())){ errEl.textContent = 'That username is already taken.'; errEl.classList.add('show'); return; }
+  const submitBtn = e.target.querySelector('button[type=submit]');
+  submitBtn.disabled = true;
+  try{
+    await api.addAdmin(getAdminToken(), u, p);
+    await refreshAdmins();
+    closeModal('adminAddOverlay');
+    renderAdminAdmins();
+    toast('Admin "'+u+'" added');
+  }catch(err){
+    console.error('add admin failed', err);
+    errEl.textContent = (err && err.message) ? err.message : "Couldn't add the admin — check your connection.";
+    errEl.classList.add('show');
+  }finally{
+    submitBtn.disabled = false;
+  }
 });
-document.getElementById('changePassForm').addEventListener('submit', function(e){
+document.getElementById('changePassForm').addEventListener('submit', async function(e){
   e.preventDefault();
   const cur = document.getElementById('curPass').value;
   const next = document.getElementById('newPass').value;
-  const me = admins.find(a=>a.username===currentAdmin);
   const errEl = document.getElementById('changePassErr');
-  if(!me || me.password !== cur){ errEl.classList.add('show'); return; }
   errEl.classList.remove('show');
-  me.password = next;
-  saveAdmins();
-  document.getElementById('changePassForm').reset();
-  toast('Password updated');
+  const submitBtn = e.target.querySelector('button[type=submit]');
+  submitBtn.disabled = true;
+  try{
+    const ok = await api.changePassword(getAdminToken(), cur, next);
+    if(!ok){ errEl.textContent = 'Current password is incorrect.'; errEl.classList.add('show'); return; }
+    document.getElementById('changePassForm').reset();
+    toast('Password updated');
+  }catch(err){
+    console.error('change password failed', err);
+    errEl.textContent = "Couldn't update the password — check your connection.";
+    errEl.classList.add('show');
+  }finally{
+    submitBtn.disabled = false;
+  }
 });
 
 /* ---------------- Embedded memo generator (iframe) ---------------- */
@@ -1729,15 +1989,21 @@ function ensureMemoIframeLoaded(){
   }
 }
 
-window.addEventListener('message', function(e){
+window.addEventListener('message', async function(e){
   const data = e.data;
   if(!data) return;
   if(data.type === 'trs-request-order-id'){
-    const newId = genDailyId('O', K.orderSeq);
-    if(e.source) e.source.postMessage({ type:'trs-order-id-assigned', id: newId }, '*');
+    try{
+      const newId = await api.nextId('O');
+      if(e.source) e.source.postMessage({ type:'trs-order-id-assigned', id: newId }, '*');
+    }catch(err){
+      console.error('could not assign order id', err); // the memo tool falls back to its own number after a short timeout
+    }
     return;
   }
   if(data.type !== 'trs-memo-save') return;
+  const token = getAdminToken();
+  if(!token){ toast('Please sign in again to save this memo.'); return; }
   const p = data.payload || {};
   const items = (p.items||[]).map(it=>({ productId:null, name: it.name, price: Number(it.price)||0, qty: Number(it.qty)||1, warranty: it.warranty||'' }));
   const noteBits = [];
@@ -1745,16 +2011,12 @@ window.addEventListener('message', function(e){
   if(p.altPhone) noteBits.push('Alt phone: ' + p.altPhone);
   if(typeof p.dueBalance === 'number' && p.dueBalance !== 0) noteBits.push('Due: ' + money(p.dueBalance));
   const order = {
-    id: (p.memoNo && p.memoNo.trim()) ? p.memoNo.trim() : genDailyId('O', K.orderSeq),
-    date: p.date ? new Date(p.date).toISOString() : new Date().toISOString(),
     customerName: p.customerName || 'Walk-in customer',
     phone: p.phone || '',
     address: p.address || '',
     note: noteBits.join(' · '),
     items,
     total: Number(p.grandTotal)||0,
-    status: 'Delivered',
-    source: 'walkin',
     paymentMode: p.paymentMode || '',
     altPhone: p.altPhone || '',
     deliveryCharge: Number(p.deliveryCharge)||0,
@@ -1762,20 +2024,40 @@ window.addEventListener('message', function(e){
     paidAmount: Number(p.paidAmount)||0,
     dueBalance: Number(p.dueBalance)||0
   };
-  orders.unshift(order);
-  saveOrders();
-  renderAdminOrders();
-  renderAdminOverview();
-  toast('Walk-in order ' + order.id + ' added to the order list');
+  try{
+    const id = (p.memoNo && p.memoNo.trim()) ? p.memoNo.trim() : await api.nextId('O');
+    await api.createWalkinOrder(token, id, order);
+    await refreshOrders();
+    renderAdminOrders();
+    renderAdminOverview();
+    toast('Walk-in order ' + id + ' added to the order list');
+  }catch(err){
+    console.error('walk-in order save failed', err);
+    if(err && (err.code === '23505' || /duplicate key/i.test(err.message||''))){
+      toast('This memo is already in the order list.');
+    } else {
+      toast(err && err.message ? err.message : "Couldn't save the walk-in order — check your connection.");
+    }
+  }
 });
 
 /* ---------------- init ---------------- */
-renderCatRail();
-renderCatGrid();
-renderProducts();
-renderOffersAndBestSellers();
-renderCartCount();
-applySettingsToStorefront();
+(async function bootstrap(){
+  await loadInitialData();
+  renderCatRail();
+  renderCatGrid();
+  renderProducts();
+  renderOffersAndBestSellers();
+  renderCartCount();
+  applySettingsToStorefront();
+
+  const token = getAdminToken();
+  if(token){
+    const uname = await api.whoAmI(token);
+    if(uname){ currentAdmin = uname; await enterAdmin(); }
+    else { setAdminToken(null); }
+  }
+})();
 
 })();
 </script>
