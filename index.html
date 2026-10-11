@@ -988,6 +988,7 @@ async function loadInitialData(){
   }
 }
 
+function pad2(n){ return String(n).padStart(2,'0'); }
 function money(n){ return '৳' + Number(n||0).toLocaleString('en-BD'); }
 function salePrice(p){ return p.discount>0 ? Math.round(p.price * (1 - p.discount/100)) : p.price; }
 function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
