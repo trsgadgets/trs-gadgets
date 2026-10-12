@@ -197,6 +197,19 @@
   .pd-price{font-family:var(--mono);font-size:24px;font-weight:700;}
   .pd-strike{font-family:var(--mono);font-size:15px;color:var(--ink-faint);text-decoration:line-through;}
   .pd-badges{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;}
+  .pd-crumbs{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-faint);margin-bottom:18px;}
+  .pd-crumbs button{background:none;border:0;padding:0;font:inherit;color:var(--blue);cursor:pointer;}
+  .pd-crumbs button:hover{text-decoration:underline;}
+  .pd-crumbs .cur{color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:46ch;}
+  .pd-avail{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px;background:var(--green-tint);color:var(--green);margin-bottom:12px;}
+  .pd-avail.out{background:var(--red-tint);color:var(--red);}
+  .pd-avail i{width:7px;height:7px;border-radius:50%;background:currentColor;display:inline-block;}
+  .pd-trust{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px;}
+  @media (max-width:420px){.pd-trust{grid-template-columns:1fr;}}
+  .pd-trust-item{display:flex;gap:10px;align-items:flex-start;padding:12px;border:1px solid var(--line);border-radius:10px;background:#fff;}
+  .pd-trust-item svg{flex:none;width:20px;height:20px;color:var(--blue);margin-top:1px;}
+  .pd-trust-item b{display:block;font-size:13px;color:var(--ink);line-height:1.3;}
+  .pd-trust-item span{display:block;font-size:12px;color:var(--ink-soft);line-height:1.4;margin-top:2px;}
   .pd-description-section{margin-top:40px;padding-top:28px;border-top:1px solid var(--line);max-width:760px;}
   .pd-description-section h3{font-family:var(--display);font-size:17px;margin:0 0 12px;}
   .pd-desc{font-size:14px;color:var(--ink-soft);line-height:1.75;white-space:pre-wrap;}
@@ -429,12 +442,18 @@
     </button>
   </div>
   <div class="wrap" style="padding-top:28px;padding-bottom:60px;">
+    <nav class="pd-crumbs" aria-label="Breadcrumb">
+      <button type="button" id="pdCrumbHome">Home</button><span>/</span>
+      <button type="button" id="pdCrumbCat"></button><span>/</span>
+      <span class="cur" id="pdCrumbName"></span>
+    </nav>
     <div class="pd-grid">
       <div>
         <div class="pd-main-img" id="pdMainImg"></div>
         <div class="pd-thumbs" id="pdThumbs"></div>
       </div>
       <div>
+        <div class="pd-avail" id="pdAvail"></div>
         <div class="pd-cat" id="pdCat"></div>
         <h1 class="pd-name" id="pdName"></h1>
         <div class="pd-sku" id="pdSku"></div>
@@ -450,6 +469,7 @@
           <button type="button" id="pdQtyInc">+</button>
         </div>
         <button class="btn btn-primary btn-block" id="pdAddBtn">Add to cart</button>
+        <div class="pd-trust" id="pdTrust"></div>
       </div>
     </div>
     <div class="pd-description-section">
@@ -1202,12 +1222,33 @@ function renderProductDetail(){
   mainImg.innerHTML = imgs.length ? `<img src="${escapeHtml(imgs[pdImgIdx])}" onerror="this.style.display='none'">` : gadgetIconSvg;
   document.getElementById('pdThumbs').innerHTML = imgs.map((im,i)=>`<div class="pd-thumb ${i===pdImgIdx?'active':''}" data-thumb="${i}"><img src="${escapeHtml(im)}" onerror="this.style.display='none'"></div>`).join('');
   document.querySelectorAll('[data-thumb]').forEach(t=>t.addEventListener('click', ()=>{ pdImgIdx = Number(t.dataset.thumb); renderProductDetail(); }));
+  document.getElementById('pdCrumbCat').textContent = categoryName(p.categoryId);
+  document.getElementById('pdCrumbName').textContent = p.name;
+  const av = document.getElementById('pdAvail');
+  av.className = 'pd-avail' + (p.stock<=0 ? ' out' : '');
+  av.innerHTML = '<i></i>' + (p.stock<=0 ? 'Out of stock' : 'In stock');
+  const charges = [settings.deliveryChargeDhaka, settings.deliveryChargeGazipur, settings.deliveryChargeOutside].map(Number).filter(n=>!isNaN(n));
+  const trust = [
+    ['<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>','100% authentic','Genuine products only'],
+    ['<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>','Established since 2026','TRS Gadgets'],
+    p.warranty ? ['<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6l7-3z"/></svg>','Warranty',p.warranty] : null,
+    ['<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="13" rx="2"/><circle cx="12" cy="12.5" r="2.5"/></svg>','Cash on delivery','Delivery charge paid in advance'],
+    charges.length ? ['<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h11v9H3zM14 10h4l3 3v3h-7z"/><circle cx="7" cy="18" r="1.6"/><circle cx="17" cy="18" r="1.6"/></svg>','Delivery',(Math.min.apply(null,charges)===Math.max.apply(null,charges) ? money(charges[0]) : money(Math.min.apply(null,charges)) + ' – ' + money(Math.max.apply(null,charges))) + ' by area'] : null,
+    settings.phone ? ['<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/></svg>','Need help?',settings.phone] : null
+  ].filter(Boolean);
+  document.getElementById('pdTrust').innerHTML = trust.map(t=>`<div class="pd-trust-item">${t[0]}<div><b>${escapeHtml(t[1])}</b><span>${escapeHtml(t[2])}</span></div></div>`).join('');
   document.getElementById('pdQtyVal').textContent = pdQty;
   document.getElementById('pdAddBtn').disabled = p.stock<=0;
   document.getElementById('pdAddBtn').textContent = p.stock<=0 ? 'Out of stock' : 'Add to cart';
 }
 document.getElementById('pdBackBtn').addEventListener('click', closeProductPage);
 document.getElementById('pdShareBtn').addEventListener('click', shareCurrentProduct);
+document.getElementById('pdCrumbHome').addEventListener('click', ()=>{ activeCat='all'; closeProductPage(); renderCatRail(); renderProducts(); window.scrollTo({top:0}); });
+document.getElementById('pdCrumbCat').addEventListener('click', ()=>{
+  const cid = pdCurrent && pdCurrent.categoryId;
+  closeProductPage();
+  if(cid){ activeCat = cid; renderCatRail(); renderProducts(); setTimeout(()=>{ const s=document.getElementById('shop'); if(s) s.scrollIntoView({behavior:'smooth'}); }, 80); }
+});
 document.getElementById('pdCartBtn').addEventListener('click', ()=>{ renderCart(); openModal('cartOverlay'); });
 document.getElementById('pdQtyDec').addEventListener('click', ()=>{ if(pdQty>1){ pdQty--; document.getElementById('pdQtyVal').textContent = pdQty; } });
 document.getElementById('pdQtyInc').addEventListener('click', ()=>{ if(pdCurrent && pdQty < pdCurrent.stock){ pdQty++; document.getElementById('pdQtyVal').textContent = pdQty; } else { toast('Only ' + (pdCurrent?pdCurrent.stock:0) + ' left in stock'); } });
